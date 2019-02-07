@@ -15,7 +15,7 @@ rooted at `/opt/solr/` in the stock Solr docker image.
 
 ## Facet cache configuration
 To configure the facetCache, add the following cache config to your `solrconfig.xml`:
-```
+```xml
 <cache name="termFacetCache"
        class="solr.search.LRUCache"
        size="200"
