@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.solr.common.SolrException;
+import org.apache.solr.request.TermFacetCache;
 import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.NumberType;
 import org.apache.solr.schema.SchemaField;
@@ -66,6 +67,7 @@ public class FacetField extends FacetRequestSorted {
   String prefix;
   FacetMethod method;
   int cacheDf;  // 0 means "default", -1 means "never cache"
+  int countCacheDf = 0; // 0 means "default", -1 means "never cache" -- for TermFacetCache; special val -2 uses legacy RelatednessAgg implementation
 
   // experimental - force perSeg collection when using dv method, currently for testing purposes only.
   Boolean perSeg;

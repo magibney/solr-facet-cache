@@ -44,6 +44,8 @@ import org.apache.solr.search.DocIterator;
 import org.apache.solr.search.DocSet;
 import org.apache.solr.search.SolrCache;
 import org.apache.solr.search.SolrIndexSearcher;
+import org.apache.solr.search.facet.FacetFieldProcessor.ParallelCountAccStruct;
+import org.apache.solr.search.facet.FacetFieldProcessorByArrayDV.SegCountGlobal;
 import org.apache.solr.search.facet.SlotAcc.SlotContext;
 import org.apache.solr.uninverting.DocTermOrds;
 import org.apache.solr.util.TestInjection;
@@ -427,14 +429,29 @@ public class UnInvertedField extends DocTermOrds {
 
     int uniqueTerms = 0;
     final CountSlotAcc countAcc = processor.countAcc;
+    final ParallelCountAccStruct[] parallelCountAccs = processor.getParallelDocSets(processor.collectAcc == null && processor.allBucketsAcc == null);
+    if (parallelCountAccs == null) {
+      return;
+    }
 
     for (TopTerm tt : bigTerms.values()) {
       if (tt.termNum >= startTermIndex && tt.termNum < endTermIndex) {
         // handle the biggest terms
-        DocSet intersection = searcher.getDocSet(tt.termQuery, docs);
+        DocSet termSet = searcher.getDocSet(tt.termQuery);
+        DocSet intersection = termSet.intersection(docs);
         int collected = processor.collectFirstPhase(intersection, tt.termNum - startTermIndex,
                                                     slotNum -> { return new SlotContext(tt.termQuery); });
-        countAcc.incrementCount(tt.termNum - startTermIndex, collected);
+        final int termOrd = tt.termNum - startTermIndex;
+        countAcc.incrementCount(termOrd, collected);
+        int i = parallelCountAccs.length - 1;
+        ParallelCountAccStruct entry = parallelCountAccs[i];
+        if (!entry.isBase) { // don't double-collect the base entry
+          entry.countAccEntry.countAcc.incrementCount(termOrd, termSet.intersectionSize(entry.docSet));
+        }
+        while (i-- > 0) {
+          entry = parallelCountAccs[i];
+          entry.countAccEntry.countAcc.incrementCount(termOrd, termSet.intersectionSize(entry.docSet));
+        }
         if (collected > 0) {
           uniqueTerms++;
         }
@@ -454,9 +471,30 @@ public class UnInvertedField extends DocTermOrds {
 
       // TODO: handle facet.prefix here!!!
 
-      DocIterator iter = docs.iterator();
+      final ParallelDocIterator iter;
+      final CountSlotAcc[] countAccs;
+      final int activeCt = parallelCountAccs.length;
+      if (activeCt == 1) {
+        ParallelCountAccStruct entry = parallelCountAccs[0];
+        countAccs = new CountSlotAcc[] {entry.countAccEntry.countAcc};
+        iter = new SingletonDocIterator(entry.docSet.iterator(), entry.isBase);
+      } else {
+        DocIterator[] subIterators = new DocIterator[activeCt];
+        countAccs = new CountSlotAcc[activeCt];
+        ParallelCountAccStruct entry;
+        int i = 0;
+        do {
+          entry = parallelCountAccs[i];
+          subIterators[i] = entry.docSet.iterator();
+          countAccs[i] = entry.countAccEntry.countAcc;
+        } while (++i < activeCt);
+        iter = new UnionDocIterator(subIterators, entry.isBase);
+      }
+      final SegCountGlobal counts = new SegCountGlobal(countAccs);
       while (iter.hasNext()) {
         int doc = iter.nextDoc();
+        int maxIdx = iter.registerCounts(counts);
+        boolean collectBase = iter.collectBase();
 
         if (doc >= adjustedMax) {
           do {
@@ -494,8 +532,10 @@ public class UnInvertedField extends DocTermOrds {
             int arrIdx = tnum - startTermIndex;
             if (arrIdx < 0) continue;
             if (arrIdx >= nTerms) break;
-            countAcc.incrementCount(arrIdx, 1);
-            processor.collectFirstPhase(segDoc, arrIdx, processor.slotContext);
+            counts.incrementCount(-1, arrIdx, 1, maxIdx);
+            if (collectBase) {
+              processor.collectFirstPhase(segDoc, arrIdx, processor.slotContext);
+            }
           }
         } else {
           int tnum = 0;
@@ -508,8 +548,10 @@ public class UnInvertedField extends DocTermOrds {
               int arrIdx = tnum - startTermIndex;
               if (arrIdx >= 0) {
                 if (arrIdx >= nTerms) break;
-                countAcc.incrementCount(arrIdx, 1);
-                processor.collectFirstPhase(segDoc, arrIdx, processor.slotContext);
+                counts.incrementCount(-1, arrIdx, 1, maxIdx);
+                if (collectBase) {
+                  processor.collectFirstPhase(segDoc, arrIdx, processor.slotContext);
+                }
               }
               delta = 0;
             }

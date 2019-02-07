@@ -50,6 +50,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
   FacetRequestT freq;
 
   DocSet filter;  // additional filters specified by "filter"  // TODO: do these need to be on the context to support recomputing during multi-select?
+  List<Query> filterQs;
   LinkedHashMap<String,SlotAcc> accMap;
   SlotAcc[] accs;
   CountSlotAcc countAcc;
@@ -70,7 +71,8 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
 
   private void evalFilters() throws IOException {
     if (freq.domain.filters == null || freq.domain.filters.isEmpty()) return;
-    this.filter = fcontext.searcher.getDocSet(evalJSONFilterQueryStruct(fcontext, freq.domain.filters));
+    this.filterQs = evalJSONFilterQueryStruct(fcontext, freq.domain.filters);
+    this.filter = fcontext.searcher.getDocSet(this.filterQs);
   }
   
   private static List<Query> evalJSONFilterQueryStruct(FacetContext fcontext, List<Object> filters) throws IOException {
@@ -146,6 +148,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
                                   "'query' domain must not evaluate to an empty list of queries");
         }
         fcontext.base = fcontext.searcher.getDocSet(domainQs);
+        fcontext.baseFilters = domainQs.toArray(new Query[domainQs.size()]);
       } catch (SolrException e) {
         throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
                                 "Unable to parse domain 'query': " + freq.domain.explicitQueries +
@@ -168,6 +171,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
 
     if (this.filter != null && !appliedFilters) {
       fcontext.base = fcontext.base.intersection( filter );
+      fcontext.baseFilters = FacetContext.append(fcontext.baseFilters, filterQs);
     }
   }
 
@@ -231,6 +235,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
 
     // recompute the base domain
     fcontext.base = fcontext.searcher.getDocSet(qlist);
+    fcontext.baseFilters = qlist.toArray(new Query[qlist.size()]);
   }
 
   /** modifies the context base if there is a join field domain change */
@@ -239,6 +244,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
 
     final Query domainQuery = freq.domain.joinField.createDomainQuery(fcontext);
     fcontext.base = fcontext.searcher.getDocSet(domainQuery);
+    fcontext.baseFilters = new Query[]{domainQuery};
   }
 
   /** modifies the context base if there is a graph field domain change */
@@ -247,6 +253,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
 
     final Query domainQuery = freq.domain.graphField.createDomainQuery(fcontext);
     fcontext.base = fcontext.searcher.getDocSet(domainQuery);
+    fcontext.baseFilters = new Query[]{domainQuery};
   }
 
   // returns "true" if filters were applied to fcontext.base already
@@ -284,6 +291,7 @@ public abstract class FacetProcessor<FacetRequestT extends FacetRequest>  {
     }
 
     fcontext.base = result;
+    fcontext.baseFilters = null; // unusual case; TODO: can we make a cache key for this base domain?
     return appliedFilters;
   }
 
